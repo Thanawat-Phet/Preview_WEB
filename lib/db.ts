@@ -375,3 +375,128 @@ export async function saveCategories(categories: Category[]): Promise<void> {
     client.release();
   }
 }
+
+// ============================================
+// ORDER helpers
+// ============================================
+
+export async function getOrders(): Promise<Order[]> {
+  const rows = await query<{ id: string; user_id: string; product_name: string; content_delivered: string; date: string }>(
+    'SELECT id, user_id, product_name, content_delivered, date FROM orders ORDER BY date',
+  );
+  return rows.map(r => ({
+    id: r.id,
+    user_id: r.user_id,
+    product_name: r.product_name,
+    content_delivered: r.content_delivered,
+    date: typeof r.date === 'object' ? (r.date as unknown as Date).toISOString() : r.date,
+  }));
+}
+
+export async function saveOrders(orders: Order[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const o of orders) {
+      await client.query(
+        `INSERT INTO orders (id, user_id, product_name, content_delivered, date)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (id) DO NOTHING`,
+        [o.id, o.user_id, o.product_name, o.content_delivered, o.date],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// ============================================
+// SITE CONFIG helpers
+// ============================================
+
+export async function getConfig(): Promise<SiteConfig> {
+  const row = await queryOne<{ value: SiteConfig }>('SELECT value FROM site_config WHERE key = $1', ['main']);
+
+  let config: SiteConfig = row ? row.value : DEFAULT_CONFIG;
+
+  // Backwards-compat patching
+  let needsSave = false;
+
+  if (!config.payment) {
+    config.payment = DEFAULT_CONFIG.payment;
+    needsSave = true;
+  }
+  if (!config.branding) {
+    config.branding = DEFAULT_CONFIG.branding;
+    needsSave = true;
+  }
+  if (!config.social) {
+    config.social = DEFAULT_CONFIG.social;
+    needsSave = true;
+  }
+  if (!config.contact) {
+    config.contact = DEFAULT_CONFIG.contact;
+    needsSave = true;
+  }
+
+  if (needsSave) {
+    await saveConfig(config);
+  }
+
+  return config;
+}
+
+export async function saveConfig(config: SiteConfig): Promise<void> {
+  await pool.query(
+    `INSERT INTO site_config (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    ['main', JSON.stringify(config)],
+  );
+}
+
+// ============================================
+// TOPUP TRANSACTION helpers
+// ============================================
+
+export async function getTopupTransactions(): Promise<TopupTransaction[]> {
+  const rows = await query<{
+    id: string; user_id: string; type: string; amount: string;
+    status: string; reference: string | null; transaction_id: string | null; date: string;
+  }>('SELECT id, user_id, type, amount, status, reference, transaction_id, date FROM topup_transactions ORDER BY date');
+
+  return rows.map(r => ({
+    id: r.id,
+    user_id: r.user_id,
+    type: r.type as 'slip' | 'truemoney',
+    amount: parseFloat(r.amount),
+    status: r.status as 'pending' | 'success' | 'failed',
+    reference: r.reference ?? undefined,
+    transactionId: r.transaction_id ?? undefined,
+    date: typeof r.date === 'object' ? (r.date as unknown as Date).toISOString() : r.date,
+  }));
+}
+
+export async function saveTopupTransactions(transactions: TopupTransaction[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const t of transactions) {
+      await client.query(
+        `INSERT INTO topup_transactions (id, user_id, type, amount, status, reference, transaction_id, date)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (id) DO NOTHING`,
+        [t.id, t.user_id, t.type, t.amount, t.status, t.reference ?? null, t.transactionId ?? null, t.date],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
