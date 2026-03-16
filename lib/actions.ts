@@ -397,3 +397,198 @@ export async function getAllOrders(): Promise<Order[]> {
 }
 
 // ============================================
+// CONFIG ACTIONS
+// ============================================
+
+export async function updateBanners(banners: Banner[]): Promise<ActionResponse> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const config = await getConfig();
+  config.banners = banners;
+  await saveConfig(config);
+  
+  return { success: true, message: 'Banners updated successfully' };
+}
+
+export async function getSiteConfig(): Promise<SiteConfig> {
+  await ensureInitialized();
+  return getConfig();
+}
+
+// ============================================
+// USER MANAGEMENT (ADMIN)
+// ============================================
+
+export async function addUserCredit(userId: string, amount: number): Promise<ActionResponse> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const users = await getUsers();
+  const user = users.find(u => u.id === userId);
+  
+  if (!user) {
+    return { success: false, message: 'User not found' };
+  }
+  
+  user.credit += amount;
+  await saveUsers(users);
+  
+  return { success: true, message: `Added ${amount} credits to ${user.username}` };
+}
+
+export async function getAllUsers(): Promise<User[]> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') return [];
+  
+  return getUsers();
+}
+
+// ============================================
+// DATA FETCHING (Public)
+// ============================================
+
+export async function fetchProducts(): Promise<Product[]> {
+  await ensureInitialized();
+  return getProducts();
+}
+
+export async function fetchCategories(): Promise<Category[]> {
+  await ensureInitialized();
+  return getCategories();
+}
+
+export async function fetchProductById(id: string): Promise<Product | null> {
+  await ensureInitialized();
+  const products = await getProducts();
+  return products.find(p => p.id === id) || null;
+}
+
+// ============================================
+// TOPUP ACTIONS (Slip2Go & TrueMoney)
+// ============================================
+
+// Verify slip payment via Slip2Go API
+export async function verifySlipPayment(base64Image: string): Promise<ActionResponse<{ amount: number; transactionId: string }>> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session) {
+    return { success: false, message: 'กรุณาเข้าสู่ระบบก่อนเติมเงิน' };
+  }
+  
+  const config = await getConfig();
+  const slip2go = config.payment.slip2go;
+  
+  if (!slip2go.enabled) {
+    return { success: false, message: 'ระบบเติมเงินผ่านสลิปปิดใช้งานอยู่' };
+  }
+  
+  if (!base64Image) {
+    return { success: false, message: 'กรุณาเลือกรูปภาพสลิป' };
+  }
+  
+  try {
+    // Prepare payload for Slip2Go API (qr-base64 endpoint)
+    const requestBody = {
+      payload: {
+        imageBase64: base64Image,  // Include full data URL
+        checkDuplicate: true,
+        checkReceiver: [{
+          accountType: slip2go.accountType,
+          accountNameTH: slip2go.accountName,
+          accountNumber: slip2go.accountNumber,
+        }],
+      }
+    };
+    
+    // Call Slip2Go API with Base64
+    const response = await fetch('https://connect.slip2go.com/api/verify-slip/qr-base64/info', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${slip2go.secretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+    
+    const result = await response.json();
+    
+    // Debug log to see the actual response structure
+    console.log('Slip2Go API Response:', JSON.stringify(result, null, 2));
+    
+    // Check for API errors
+    if (!response.ok) {
+      return { 
+        success: false, 
+        message: result.message || result.error || 'ไม่สามารถตรวจสอบสลิปได้ กรุณาลองใหม่อีกครั้ง' 
+      };
+    }
+    
+    // Handle different response structures
+    // Slip2Go may return data directly or nested in result.data
+    const slipData = result.data || result;
+    
+    // Check if slip data contains amount information
+    // Amount might be in different fields: amount, transAmount, transferAmount
+    const amount = parseFloat(slipData.amount || slipData.transAmount || slipData.transferAmount || '0');
+    
+    if (amount <= 0) {
+      return { success: false, message: `ไม่พบจำนวนเงินในสลิป: ${result.message || 'กรุณาลองใหม่'}` };
+    }
+    
+    const transactionId = slipData.transactionId || slipData.transRef || generateId();
+    
+    // Check for duplicate
+    const transactions = await getTopupTransactions();
+    const isDuplicate = transactions.some(t => t.transactionId === transactionId);
+    if (isDuplicate) {
+      return { success: false, message: 'สลิปนี้ถูกใช้งานแล้ว' };
+    }
+    
+    // Add credit to user
+    const users = await getUsers();
+    const user = users.find(u => u.id === session.userId);
+    if (!user) {
+      return { success: false, message: 'ไม่พบผู้ใช้' };
+    }
+    
+    user.credit += amount;
+    await saveUsers(users);
+    
+    // Record transaction
+    const transaction: TopupTransaction = {
+      id: generateId(),
+      user_id: session.userId,
+      type: 'slip',
+      amount,
+      status: 'success',
+      transactionId,
+      reference: slipData.transRef,
+      date: new Date().toISOString(),
+    };
+    
+    transactions.push(transaction);
+    await saveTopupTransactions(transactions);
+    
+    return { 
+      success: true, 
+      message: `เติมเงินสำเร็จ ${amount.toFixed(2)} บาท`, 
+      data: { amount, transactionId } 
+    };
+    
+  } catch (error) {
+    console.error('Slip verification error:', error);
+    return { success: false, message: 'เกิดข้อผิดพลาดในการตรวจสอบสลิป กรุณาลองใหม่อีกครั้ง' };
+  }
+}
