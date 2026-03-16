@@ -278,3 +278,100 @@ export async function saveUsers(users: User[]): Promise<void> {
     client.release();
   }
 }
+
+// ============================================
+// PRODUCT helpers
+// ============================================
+
+export async function getProducts(): Promise<Product[]> {
+  const rows = await query<{ id: string; name: string; price: string; image_url: string; category_id: string }>(
+    'SELECT id, name, price, image_url, category_id FROM products ORDER BY id',
+  );
+
+  const products: Product[] = [];
+  for (const r of rows) {
+    const stockRows = await query<{ content: string }>(
+      'SELECT content FROM stock_items WHERE product_id = $1 AND is_sold = FALSE ORDER BY id',
+      [r.id],
+    );
+    products.push({
+      id: r.id,
+      name: r.name,
+      price: parseFloat(r.price),
+      image_url: r.image_url,
+      category_id: r.category_id,
+      stock_content: stockRows.map(s => s.content),
+    });
+  }
+
+  return products;
+}
+
+export async function saveProducts(products: Product[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const p of products) {
+      await client.query(
+        `INSERT INTO products (id, name, price, image_url, category_id)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, price=EXCLUDED.price, image_url=EXCLUDED.image_url, category_id=EXCLUDED.category_id`,
+        [p.id, p.name, p.price, p.image_url, p.category_id],
+      );
+
+      // Re-sync stock: delete unsold items then re-insert
+      await client.query('DELETE FROM stock_items WHERE product_id = $1 AND is_sold = FALSE', [p.id]);
+      for (const code of p.stock_content) {
+        await client.query(
+          'INSERT INTO stock_items (product_id, content) VALUES ($1,$2)',
+          [p.id, code],
+        );
+      }
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// ============================================
+// CATEGORY helpers
+// ============================================
+
+export async function getCategories(): Promise<Category[]> {
+  return query<Category>('SELECT id, name, image_url FROM categories ORDER BY id');
+}
+
+export async function saveCategories(categories: Category[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Remove categories not in the list
+    const ids = categories.map(c => c.id);
+    if (ids.length > 0) {
+      await client.query(
+        `DELETE FROM categories WHERE id NOT IN (${ids.map((_, i) => `$${i + 1}`).join(',')})`,
+        ids,
+      );
+    } else {
+      await client.query('DELETE FROM categories');
+    }
+    for (const c of categories) {
+      await client.query(
+        `INSERT INTO categories (id, name, image_url)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, image_url=EXCLUDED.image_url`,
+        [c.id, c.name, c.image_url],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
