@@ -269,3 +269,131 @@ export async function addStockToProduct(id: string, stockContent: string): Promi
 }
 
 // ============================================
+// BUY PRODUCT ACTION
+// ============================================
+
+export async function buyProduct(productId: string): Promise<ActionResponse<{ content: string }>> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session) {
+    return { success: false, message: 'Please login to purchase' };
+  }
+  
+  const users = await getUsers();
+  const user = users.find(u => u.id === session.userId);
+  
+  if (!user) {
+    return { success: false, message: 'User not found' };
+  }
+  
+  const products = await getProducts();
+  const product = products.find(p => p.id === productId);
+  
+  if (!product) {
+    return { success: false, message: 'Product not found' };
+  }
+  
+  if (product.stock_content.length === 0) {
+    return { success: false, message: 'Product is out of stock' };
+  }
+  
+  if (user.credit < product.price) {
+    return { success: false, message: 'Insufficient credit' };
+  }
+  
+  // Deduct credit
+  user.credit -= product.price;
+  
+  // Pop the first item from stock
+  const deliveredContent = product.stock_content.shift()!;
+  
+  // Create order
+  const order: Order = {
+    id: generateId(),
+    user_id: user.id,
+    product_name: product.name,
+    content_delivered: deliveredContent,
+    date: new Date().toISOString(),
+  };
+  
+  // Save all changes
+  await saveUsers(users);
+  await saveProducts(products);
+  
+  const orders = await getOrders();
+  orders.push(order);
+  await saveOrders(orders);
+  
+  return { 
+    success: true, 
+    message: 'Purchase successful!', 
+    data: { content: deliveredContent } 
+  };
+}
+
+// ============================================
+// CATEGORY ACTIONS
+// ============================================
+
+export async function addCategory(name: string, imageUrl: string): Promise<ActionResponse<Category>> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const newCategory: Category = {
+    id: generateId(),
+    name,
+    image_url: imageUrl,
+  };
+  
+  const categories = await getCategories();
+  categories.push(newCategory);
+  await saveCategories(categories);
+  
+  return { success: true, message: 'Category added successfully', data: newCategory };
+}
+
+export async function deleteCategory(id: string): Promise<ActionResponse> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const categories = await getCategories();
+  const filtered = categories.filter(c => c.id !== id);
+  await saveCategories(filtered);
+  
+  return { success: true, message: 'Category deleted successfully' };
+}
+
+// ============================================
+// ORDER ACTIONS
+// ============================================
+
+export async function getUserOrders(): Promise<Order[]> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session) return [];
+  
+  const orders = await getOrders();
+  return orders.filter(o => o.user_id === session.userId).reverse();
+}
+
+export async function getAllOrders(): Promise<Order[]> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') return [];
+  
+  const orders = await getOrders();
+  return orders.reverse();
+}
+
+// ============================================
