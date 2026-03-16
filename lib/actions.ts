@@ -592,3 +592,195 @@ export async function verifySlipPayment(base64Image: string): Promise<ActionResp
     return { success: false, message: 'เกิดข้อผิดพลาดในการตรวจสอบสลิป กรุณาลองใหม่อีกครั้ง' };
   }
 }
+
+// Redeem TrueMoney Voucher
+export async function redeemTruemoneyVoucher(voucherUrl: string): Promise<ActionResponse<{ amount: number }>> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session) {
+    return { success: false, message: 'กรุณาเข้าสู่ระบบก่อนเติมเงิน' };
+  }
+  
+  const config = await getConfig();
+  const truemoney = config.payment.truemoney;
+  
+  if (!truemoney.enabled) {
+    return { success: false, message: 'ระบบซองอังเปาปิดใช้งานอยู่' };
+  }
+  
+  if (!truemoney.phoneNumber || truemoney.phoneNumber === '08xxxxxxxx') {
+    return { success: false, message: 'กรุณาตั้งค่าเบอร์โทรศัพท์รับเงินก่อน' };
+  }
+  
+  // Extract voucher hash from URL
+  const hashMatch = voucherUrl.match(/v=([a-zA-Z0-9]+)/);
+  if (!hashMatch) {
+    return { success: false, message: 'ลิงก์ซองอังเปาไม่ถูกต้อง' };
+  }
+  
+  const voucherHash = hashMatch[1];
+  
+  try {
+    // TrueMoney Wallet API endpoint (this is a public API)
+    const response = await fetch(`https://gift.truemoney.com/campaign/vouchers/${voucherHash}/redeem`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        mobile: truemoney.phoneNumber,
+        voucher_hash: voucherHash,
+      }),
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok || result.status?.code !== 'SUCCESS') {
+      const errorMessage = result.status?.message || 'ไม่สามารถรับซองอังเปาได้';
+      return { success: false, message: errorMessage };
+    }
+    
+    const amount = parseFloat(result.data?.voucher?.amount_baht || '0');
+    if (amount <= 0) {
+      return { success: false, message: 'จำนวนเงินในซองไม่ถูกต้อง' };
+    }
+    
+    // Add credit to user
+    const users = await getUsers();
+    const user = users.find(u => u.id === session.userId);
+    if (!user) {
+      return { success: false, message: 'ไม่พบผู้ใช้' };
+    }
+    
+    user.credit += amount;
+    await saveUsers(users);
+    
+    // Record transaction
+    const transactions = await getTopupTransactions();
+    const transaction: TopupTransaction = {
+      id: generateId(),
+      user_id: session.userId,
+      type: 'truemoney',
+      amount,
+      status: 'success',
+      reference: voucherHash,
+      date: new Date().toISOString(),
+    };
+    
+    transactions.push(transaction);
+    await saveTopupTransactions(transactions);
+    
+    return { 
+      success: true, 
+      message: `รับซองอังเปาสำเร็จ ${amount.toFixed(2)} บาท`, 
+      data: { amount } 
+    };
+    
+  } catch (error) {
+    console.error('TrueMoney voucher error:', error);
+    return { success: false, message: 'เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง' };
+  }
+}
+
+// Get user's topup history
+export async function getUserTopupHistory(): Promise<TopupTransaction[]> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session) return [];
+  
+  const transactions = await getTopupTransactions();
+  return transactions.filter(t => t.user_id === session.userId).reverse();
+}
+
+// Get all topup transactions (admin)
+export async function getAllTopupTransactions(): Promise<TopupTransaction[]> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') return [];
+  
+  const transactions = await getTopupTransactions();
+  return transactions.reverse();
+}
+
+// Update payment config (admin)
+export async function updatePaymentConfig(payment: PaymentConfig): Promise<ActionResponse> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const config = await getConfig();
+  config.payment = payment;
+  await saveConfig(config);
+  
+  return { success: true, message: 'บันทึกการตั้งค่าสำเร็จ' };
+}
+
+// Get payment config (for topup page)
+export async function getPaymentConfig(): Promise<{
+  slip2go: { enabled: boolean; bankName: string; accountName: string; accountNumber: string; qrCodeUrl?: string };
+  truemoney: { enabled: boolean };
+}> {
+  await ensureInitialized();
+  
+  const config = await getConfig();
+  return {
+    slip2go: {
+      enabled: config.payment.slip2go.enabled,
+      bankName: config.payment.slip2go.bankName,
+      accountName: config.payment.slip2go.accountName,
+      accountNumber: config.payment.slip2go.accountNumber,
+      qrCodeUrl: config.payment.slip2go.qrCodeUrl,
+    },
+    truemoney: {
+      enabled: config.payment.truemoney.enabled,
+    },
+  };
+}
+
+// Update site settings (admin)
+export async function updateSiteSettings(settings: {
+  siteName: string;
+  branding: SiteConfig['branding'];
+  social: SiteConfig['social'];
+  contact: SiteConfig['contact'];
+}): Promise<ActionResponse> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const config = await getConfig();
+  config.siteName = settings.siteName;
+  config.branding = settings.branding;
+  config.social = settings.social;
+  config.contact = settings.contact;
+  await saveConfig(config);
+  
+  return { success: true, message: 'บันทึกการตั้งค่าสำเร็จ' };
+}
+
+// Get public site config (for frontend)
+export async function getPublicSiteConfig(): Promise<{
+  siteName: string;
+  branding: SiteConfig['branding'];
+  social: SiteConfig['social'];
+  contact: SiteConfig['contact'];
+}> {
+  await ensureInitialized();
+  
+  const config = await getConfig();
+  return {
+    siteName: config.siteName,
+    branding: config.branding,
+    social: config.social,
+    contact: config.contact,
+  };
+}
