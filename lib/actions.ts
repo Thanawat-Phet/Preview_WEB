@@ -140,3 +140,132 @@ export async function getCurrentUser(): Promise<User | null> {
 }
 
 // ============================================
+// PRODUCT ACTIONS
+// ============================================
+
+export async function addProduct(
+  name: string,
+  price: number,
+  imageUrl: string,
+  categoryId: string,
+  stockContent: string
+): Promise<ActionResponse<Product>> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  // Split stock content by newlines
+  const stockItems = stockContent
+    .split('\n')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+  
+  const newProduct: Product = {
+    id: generateId(),
+    name,
+    price,
+    image_url: imageUrl,
+    category_id: categoryId,
+    stock_content: stockItems,
+  };
+  
+  const products = await getProducts();
+  products.push(newProduct);
+  await saveProducts(products);
+  
+  return { success: true, message: 'Product added successfully', data: newProduct };
+}
+
+export async function updateProduct(
+  id: string,
+  name: string,
+  price: number,
+  imageUrl: string,
+  categoryId: string,
+  stockContent?: string
+): Promise<ActionResponse<Product>> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const products = await getProducts();
+  const productIndex = products.findIndex(p => p.id === id);
+  
+  if (productIndex === -1) {
+    return { success: false, message: 'Product not found' };
+  }
+  
+  products[productIndex] = {
+    ...products[productIndex],
+    name,
+    price,
+    image_url: imageUrl,
+    category_id: categoryId,
+  };
+  
+  // If stock content provided, update it
+  if (stockContent !== undefined) {
+    const stockItems = stockContent
+      .split('\n')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+    products[productIndex].stock_content = stockItems;
+  }
+  
+  await saveProducts(products);
+  
+  return { success: true, message: 'Product updated successfully', data: products[productIndex] };
+}
+
+export async function deleteProduct(id: string): Promise<ActionResponse> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const products = await getProducts();
+  const filtered = products.filter(p => p.id !== id);
+  
+  if (filtered.length === products.length) {
+    return { success: false, message: 'Product not found' };
+  }
+  
+  await saveProducts(filtered);
+  return { success: true, message: 'Product deleted successfully' };
+}
+
+export async function addStockToProduct(id: string, stockContent: string): Promise<ActionResponse> {
+  await ensureInitialized();
+  
+  const session = await getSession();
+  if (!session || session.role !== 'admin') {
+    return { success: false, message: 'Unauthorized' };
+  }
+  
+  const products = await getProducts();
+  const product = products.find(p => p.id === id);
+  
+  if (!product) {
+    return { success: false, message: 'Product not found' };
+  }
+  
+  const stockItems = stockContent
+    .split('\n')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+  
+  product.stock_content.push(...stockItems);
+  await saveProducts(products);
+  
+  return { success: true, message: `Added ${stockItems.length} items to stock` };
+}
+
+// ============================================
