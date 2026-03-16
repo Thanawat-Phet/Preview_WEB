@@ -244,3 +244,37 @@ export function generateId(): string {
 // ============================================
 // USER helpers
 // ============================================
+
+export async function getUsers(): Promise<User[]> {
+  const rows = await query<{ id: string; username: string; password: string; role: string; credit: string }>(
+    'SELECT id, username, password, role, credit FROM users ORDER BY id',
+  );
+  return rows.map(r => ({
+    id: r.id,
+    username: r.username,
+    password: r.password,
+    role: r.role as 'admin' | 'user',
+    credit: parseFloat(r.credit),
+  }));
+}
+
+export async function saveUsers(users: User[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const u of users) {
+      await client.query(
+        `INSERT INTO users (id, username, password, role, credit)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, password=EXCLUDED.password, role=EXCLUDED.role, credit=EXCLUDED.credit`,
+        [u.id, u.username, u.password, u.role, u.credit],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
